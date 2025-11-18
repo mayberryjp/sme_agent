@@ -1,6 +1,6 @@
-pip install textual rich
+pip install -r requirements.txt
 
+python3 -m pip install -r requirements.txt
 
-python3 -m pip install textual rich
+python ./question_screen.py
 
-python question_screen.py
