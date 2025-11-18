@@ -1,0 +1,4 @@
+pip install textual rich
+python3 -m pip install textual rich
+
+python question_screen.py
