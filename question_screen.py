@@ -116,10 +116,10 @@ def import_questions_to_db(csv_file):
 def get_uncategorized_questions_from_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT guid, question FROM questions WHERE category IS NULL OR category = ''")
+    c.execute("SELECT guid, question, SAPFullPath FROM questions WHERE category IS NULL OR category = ''")
     rows = c.fetchall()
     conn.close()
-    return [{"guid": row[0], "question": row[1]} for row in rows]
+    return [{"guid": row[0], "question": row[1], "sap": row[2]} for row in rows]
 
 # --- Initialize the configuration database ---
 def init_config_db():
@@ -235,6 +235,7 @@ class QuestionCategorizerApp(App):
         yield Header()
         yield Container(
             Static("Question Categorizer", classes="title", id="title"),
+            Static("", id="sap"),  # SAP display moved up here
             Static("", id="question"),
             Horizontal(
                 *[Button(cat, id=f"cat_{i}", variant="primary") for i, cat in enumerate(CATEGORIES)],
@@ -253,11 +254,14 @@ class QuestionCategorizerApp(App):
 
     def update_question(self):
         question_obj = self.questions[self.question_index] if self.question_index < len(self.questions) else None
+        sap_widget = self.query_one("#sap", Static)
         question_widget = self.query_one("#question", Static)
         if question_obj:
-            # Use a softer color
-            question_widget.update(f"\n\n[bold light_steel_blue]{question_obj['question']}[/bold light_steel_blue]\n")
+            sap_text = question_obj.get("sap", "")
+            sap_widget.update(f"[bold light_steel_blue]SAP: {sap_text}[/bold light_steel_blue]")
+            question_widget.update(f"[bold light_steel_blue]{question_obj['question']}[/bold light_steel_blue]\n")
         else:
+            sap_widget.update("")
             question_widget.update("\n\n[bold magenta]All questions done![/bold magenta]\n")
         for i, cat in enumerate(CATEGORIES):
             btn = self.query_one(f"#cat_{i}", Button)
