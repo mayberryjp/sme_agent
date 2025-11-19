@@ -4,7 +4,7 @@ import datetime
 import uuid
 from pathlib import Path
 from textual.app import App, ComposeResult
-from textual.widgets import Static, Button, Header, Footer
+from textual.widgets import Static, Button, Header, Footer, Input, Select
 from textual.containers import Container, Horizontal
 from textual.reactive import reactive
 from textual import events
@@ -35,6 +35,7 @@ DB_COLUMNS = [
     "timestamp"
 ]
 
+# --- Initialize the database ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -49,12 +50,19 @@ def init_db():
             extra_column1 TEXT,
             extra_column2 TEXT,
             extra_column3 TEXT,
+            SAPFullPath TEXT,
             timestamp TEXT
         )
     """)
+    # Add SAPFullPath column if it doesn't exist
+    c.execute("PRAGMA table_info(questions)")
+    columns = [col[1] for col in c.fetchall()]
+    if "SAPFullPath" not in columns:
+        c.execute("ALTER TABLE questions ADD COLUMN SAPFullPath TEXT")
     conn.commit()
     conn.close()
 
+# --- Get GUIDs of categorized questions ---
 def get_categorized_guids():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -63,6 +71,7 @@ def get_categorized_guids():
     conn.close()
     return set(row[0] for row in rows)
 
+# --- Save a row of data to the database ---
 def save_to_db(row):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -75,11 +84,13 @@ def save_to_db(row):
     conn.commit()
     conn.close()
 
+# --- Read questions from a CSV file ---
 def read_questions(csv_file):
     with open(csv_file, newline='', encoding='utf-8') as f:
         reader = csv.reader(f)
         return [row[0] for row in reader if row and row[0].strip()]
 
+# --- Import questions from a CSV file to the database ---
 def import_questions_to_db(csv_file):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -101,6 +112,7 @@ def import_questions_to_db(csv_file):
     conn.commit()
     conn.close()
 
+# --- Get uncategorized questions from the database ---
 def get_uncategorized_questions_from_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -109,6 +121,109 @@ def get_uncategorized_questions_from_db():
     conn.close()
     return [{"guid": row[0], "question": row[1]} for row in rows]
 
+# --- Initialize the configuration database ---
+def init_config_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS configuration (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            last_updated TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+# --- Check if configuration exists ---
+def config_exists():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM configuration")
+    count = c.fetchone()[0]
+    conn.close()
+    return count > 0
+
+# --- Save configuration to the database ---
+def save_config(alias, advisory_sap, technical_sap, advisory_resource_sap):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    now = datetime.datetime.now().isoformat()
+    c.execute("INSERT OR REPLACE INTO configuration (key, value, last_updated) VALUES (?, ?, ?)", ("alias", alias, now))
+    c.execute("INSERT OR REPLACE INTO configuration (key, value, last_updated) VALUES (?, ?, ?)", ("advisory_sap", advisory_sap, now))
+    c.execute("INSERT OR REPLACE INTO configuration (key, value, last_updated) VALUES (?, ?, ?)", ("technical_sap", technical_sap, now))
+    c.execute("INSERT OR REPLACE INTO configuration (key, value, last_updated) VALUES (?, ?, ?)", ("advisory_resource_sap", advisory_resource_sap, now))
+    conn.commit()
+    conn.close()
+
+# --- Get SAPs from configuration table ---
+def get_saps_from_config():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT key, value FROM configuration WHERE key IN ('advisory_sap', 'technical_sap', 'advisory_resource_sap')")
+    saps = {row[0]: row[1] for row in c.fetchall()}
+    conn.close()
+    return saps
+
+# --- Configuration screen ---
+class ConfigScreen(App):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Container(
+            Static("Configuration Setup", classes="title", id="title"),
+            Static("Alias:", id="alias_label"),
+            Input(placeholder="Enter your alias", id="alias_input"),
+            Static("Advisory SAP:", id="advisory_label"),
+            Input(placeholder="Advisory SAP", id="advisory_input"),
+            Static("Technical SAP:", id="technical_label"),
+            Input(placeholder="Technical SAP", id="technical_input"),
+            Static("Advisory w/ Resource Awareness SAP:", id="advisory_resource_label"),
+            Input(placeholder="Advisory w/ Resource Awareness SAP", id="advisory_resource_input"),
+            Button("Save", id="save_config", variant="success"),
+            id="config_container"
+        )
+        yield Footer()
+
+    async def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "save_config":
+            alias = self.query_one("#alias_input", Input).value
+            advisory_sap = self.query_one("#advisory_input", Input).value
+            technical_sap = self.query_one("#technical_input", Input).value
+            advisory_resource_sap = self.query_one("#advisory_resource_input", Input).value
+            save_config(alias, advisory_sap, technical_sap, advisory_resource_sap)
+            self.exit()  # Close config screen
+
+    async def on_key(self, event: events.Key):
+        if event.key == "ctrl+c":
+            await self.action_quit()
+
+    CSS = """
+    #config_container {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    #title {
+        text-align: center;
+        margin-bottom: 1;
+    }
+    #alias_label, #advisory_label, #technical_label, #advisory_resource_label {
+        margin-top: 1;
+        margin-bottom: 0;
+    }
+    Input {
+        margin-bottom: 0;
+        margin-top: 0;
+        padding: 0 0;
+    }
+    Button {
+        margin: 1 0;
+        min-width: 8;
+        padding: 0 1;
+    }
+    """
+
+# --- Question categorizer app ---
 class QuestionCategorizerApp(App):
     question_index = reactive(0)
 
@@ -213,11 +328,116 @@ class QuestionCategorizerApp(App):
     }
     """
 
+# --- CSV Import Dialog Screen ---
+class CsvImportScreen(App):
+    def __init__(self):
+        super().__init__()
+        self.csv_files = [f for f in Path('.').glob('*.csv')]
+        self.saps = get_saps_from_config()
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Container(
+            Static("CSV Import", classes="title", id="title"),
+            Static(
+                "If you want to stop being asked to import CSV files, then remove CSV files from the project directory.",
+                id="csv_info",
+            ),
+            Static("Select a CSV file to import questions:", id="csv_label"),
+            Select(
+                options=[(f.name, f.name) for f in self.csv_files],
+                prompt="Choose CSV file",
+                id="csv_select"
+            ),
+            Static("Select SAP to associate with these questions:", id="sap_label"),
+            Select(
+                options=[
+                    (f"Advisory SAP: {self.saps.get('advisory_sap', '')}", self.saps.get("advisory_sap", "")),
+                    (f"Technical SAP: {self.saps.get('technical_sap', '')}", self.saps.get("technical_sap", "")),
+                    (f"Advisory w/ Resource Awareness SAP: {self.saps.get('advisory_resource_sap', '')}", self.saps.get("advisory_resource_sap", ""))
+                ],
+                prompt="Choose SAP",
+                id="sap_select"
+            ),
+            Button("Import", id="import_btn", variant="success"),
+            id="csv_import_container"
+        )
+        yield Footer()
+
+    async def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "import_btn":
+            csv_filename = self.query_one("#csv_select", Select).value
+            sap_full_path = self.query_one("#sap_select", Select).value
+            if csv_filename and sap_full_path:
+                import_questions_to_db_with_sap(csv_filename, sap_full_path)
+            self.exit()
+
+    async def on_key(self, event: events.Key):
+        if event.key == "ctrl+c":
+            await self.action_quit()
+
+    CSS = """
+    #csv_import_container {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    #title {
+        text-align: center;
+        margin-bottom: 1;
+    }
+    #csv_label, #sap_label {
+        margin-top: 1;
+        margin-bottom: 0;
+    }
+    Select {
+        margin-bottom: 1;
+        width: 100%;
+    }
+    Button {
+        margin: 1 0;
+        min-width: 8;
+        padding: 0 1;
+    }
+    """
+
+# --- Import questions with SAP association ---
+def import_questions_to_db_with_sap(csv_file, sap_full_path):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    with open(csv_file, newline='', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        for row in reader:
+            question = row[0].strip()
+            if not question:
+                continue
+            # Check if question already exists
+            c.execute("SELECT guid FROM questions WHERE question = ?", (question,))
+            result = c.fetchone()
+            if not result:
+                guid = str(uuid.uuid4())
+                c.execute(
+                    "INSERT INTO questions (guid, question, category, aI_response, evaluation_text, extra_column1, extra_column2, extra_column3, SAPFullPath, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (guid, question, '', '', '', '', '', '', sap_full_path, '')
+                )
+            else:
+                # Update SAPFullPath if question exists
+                c.execute(
+                    "UPDATE questions SET SAPFullPath = ? WHERE question = ?",
+                    (sap_full_path, question)
+                )
+    conn.commit()
+    conn.close()
+
+# --- Main ---
 if __name__ == "__main__":
     init_db()
-    if not Path(CSV_FILE).exists():
-        print(f"CSV file '{CSV_FILE}' not found. Please create it with one question per line.")
-    else:
-        import_questions_to_db(CSV_FILE)
-        uncategorized = get_uncategorized_questions_from_db()
-        QuestionCategorizerApp(uncategorized).run()
+    init_config_db()
+    if not config_exists():
+        ConfigScreen().run()
+    # After config, check for CSV files and prompt for import
+    csv_files = [f for f in Path('.').glob('*.csv')]
+    if csv_files:
+        CsvImportScreen().run()
+    uncategorized = get_uncategorized_questions_from_db()
+    QuestionCategorizerApp(uncategorized).run()
