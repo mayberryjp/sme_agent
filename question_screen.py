@@ -4,12 +4,13 @@ import datetime
 import uuid
 from pathlib import Path
 from textual.app import App, ComposeResult
+from textual.screen import Screen
 from textual.widgets import Static, Button, Header, Footer, Input, Select
 from textual.containers import Container, Horizontal
 from textual.reactive import reactive
 from textual import events
 
-CSV_FILE = "questions.csv"
+
 DB_FILE = "questions.db"
 
 CATEGORIES = [
@@ -165,20 +166,49 @@ def get_saps_from_config():
     conn.close()
     return saps
 
+# --- Get all configuration values ---
+def get_config_values():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT key, value FROM configuration")
+    values = dict(c.fetchall())
+    conn.close()
+    return values
+
 # --- Configuration screen ---
-class ConfigScreen(App):
+class ConfigScreen(Screen):
+    def __init__(self, initial_values=None):
+        super().__init__()
+        self.initial_values = initial_values or {}
+
     def compose(self) -> ComposeResult:
         yield Header()
         yield Container(
             Static("Configuration Setup", classes="title", id="title"),
             Static("Alias:", id="alias_label"),
-            Input(placeholder="Enter your alias", id="alias_input"),
+            Input(
+                placeholder="Enter your alias",
+                id="alias_input",
+                value=self.initial_values.get("alias", "")
+            ),
             Static("Advisory SAP:", id="advisory_label"),
-            Input(placeholder="Advisory SAP", id="advisory_input"),
+            Input(
+                placeholder="Advisory SAP",
+                id="advisory_input",
+                value=self.initial_values.get("advisory_sap", "")
+            ),
             Static("Technical SAP:", id="technical_label"),
-            Input(placeholder="Technical SAP", id="technical_input"),
+            Input(
+                placeholder="Technical SAP",
+                id="technical_input",
+                value=self.initial_values.get("technical_sap", "")
+            ),
             Static("Advisory w/ Resource Awareness SAP:", id="advisory_resource_label"),
-            Input(placeholder="Advisory w/ Resource Awareness SAP", id="advisory_resource_input"),
+            Input(
+                placeholder="Advisory w/ Resource Awareness SAP",
+                id="advisory_resource_input",
+                value=self.initial_values.get("advisory_resource_sap", "")
+            ),
             Button("Save", id="save_config", variant="success"),
             id="config_container"
         )
@@ -191,7 +221,7 @@ class ConfigScreen(App):
             technical_sap = self.query_one("#technical_input", Input).value
             advisory_resource_sap = self.query_one("#advisory_resource_input", Input).value
             save_config(alias, advisory_sap, technical_sap, advisory_resource_sap)
-            self.exit()  # Close config screen
+            self.app.push_screen(MenuScreen())  # Go to menu after saving
 
     async def on_key(self, event: events.Key):
         if event.key == "ctrl+c":
@@ -223,8 +253,8 @@ class ConfigScreen(App):
     }
     """
 
-# --- Question categorizer app ---
-class QuestionCategorizerApp(App):
+# --- Question Categorizer Screen ---
+class QuestionCategorizerScreen(Screen):
     question_index = reactive(0)
 
     def __init__(self, questions):
@@ -235,7 +265,7 @@ class QuestionCategorizerApp(App):
         yield Header()
         yield Container(
             Static("Question Categorizer", classes="title", id="title"),
-            Static("", id="sap"),  # SAP display moved up here
+            Static("", id="sap"),
             Static("", id="question"),
             Horizontal(
                 *[Button(cat, id=f"cat_{i}", variant="primary") for i, cat in enumerate(CATEGORIES)],
@@ -243,6 +273,7 @@ class QuestionCategorizerApp(App):
             ),
             Horizontal(
                 Button("Go Back", id="go_back", variant="warning"),
+                Button("Menu", id="menu", variant="primary"),
                 id="nav_buttons"
             ),
             id="main_container"
@@ -269,24 +300,19 @@ class QuestionCategorizerApp(App):
 
     async def on_button_pressed(self, event: Button.Pressed):
         if event.button.id == "go_back":
-            # Go back to previous question if possible
             if self.question_index > 0:
                 self.question_index -= 1
                 self.update_question()
             return
-
+        if event.button.id == "menu":
+            self.app.push_screen(MenuScreen())
+            return
         if self.question_index >= len(self.questions):
             return
         category = str(event.button.label)
         question_obj = self.questions[self.question_index]
         guid = question_obj["guid"]
         question = question_obj["question"]
-
-        # Debug prints
-        print(f"[DEBUG] guid: {repr(guid)}")
-        print(f"[DEBUG] category: {repr(category)}")
-        print(f"[DEBUG] question: {repr(question)}")
-
         timestamp = datetime.datetime.now().isoformat()
         row = [guid, question, category, "", "", "", "", "", timestamp]
         save_to_db(row)
@@ -295,7 +321,7 @@ class QuestionCategorizerApp(App):
 
     async def on_key(self, event: events.Key):
         if event.key == "ctrl+c":
-            await self.action_quit()
+            await self.app.action_quit()
 
     CSS = """
     #main_container {
@@ -332,53 +358,108 @@ class QuestionCategorizerApp(App):
     }
     """
 
-# --- CSV Import Dialog Screen ---
-class CsvImportScreen(App):
-    def __init__(self):
-        super().__init__()
-        self.csv_files = [f for f in Path('.').glob('*.csv')]
-        self.saps = get_saps_from_config()
-
+# --- Menu Screen ---
+class MenuScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Container(
-            Static("CSV Import", classes="title", id="title"),
+            Static("Main Menu", classes="title", id="menu_title"),
+            Horizontal(
+                Button("Configuration", id="menu_config", variant="primary"),
+                Button("Import CSV", id="menu_import", variant="primary"),
+                Button("Questions", id="menu_questions", variant="primary"),
+                id="menu_buttons"
+            ),
+            id="menu_container"
+        )
+        yield Footer()
+
+    async def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == "menu_config":
+            config_values = get_config_values()
+            self.app.push_screen(ConfigScreen(initial_values=config_values))
+        elif event.button.id == "menu_import":
+            self.app.push_screen(CsvImportScreen())  # <-- Always show import screen!
+        elif event.button.id == "menu_questions":
+            uncategorized = get_uncategorized_questions_from_db()
+            self.app.push_screen(QuestionCategorizerScreen(uncategorized))
+
+    async def on_key(self, event: events.Key):
+        if event.key == "ctrl+c":
+            await self.action_quit()
+
+    CSS = """
+    #menu_container {
+        align: center middle;
+        height: 100%;
+        width: 100%;
+    }
+    #menu_title {
+        text-align: center;
+        margin-bottom: 2;
+    }
+    #menu_buttons {
+        align: center middle;
+        margin-top: 2;
+    }
+    Button {
+        margin: 0 2;
+        min-width: 16;
+        padding: 0 2;
+    }
+    """
+
+# --- CSV Import Screen ---
+class CsvImportScreen(Screen):
+    def compose(self) -> ComposeResult:
+        csv_files = [f for f in Path('.').glob('*.csv')]
+        saps = get_saps_from_config()
+        yield Header()
+        yield Container(
+            Static("CSV Import", classes="title", id="csv_import_title"),
             Static(
                 "If you want to stop being asked to import CSV files, then remove CSV files from the project directory.",
                 id="csv_info",
             ),
             Static("Select a CSV file to import questions:", id="csv_label"),
             Select(
-                options=[(f.name, f.name) for f in self.csv_files],
+                options=[(f.name, f.name) for f in csv_files],
                 prompt="Choose CSV file",
                 id="csv_select"
             ),
             Static("Select SAP to associate with these questions:", id="sap_label"),
             Select(
                 options=[
-                    (f"Advisory SAP: {self.saps.get('advisory_sap', '')}", self.saps.get("advisory_sap", "")),
-                    (f"Technical SAP: {self.saps.get('technical_sap', '')}", self.saps.get("technical_sap", "")),
-                    (f"Advisory w/ Resource Awareness SAP: {self.saps.get('advisory_resource_sap', '')}", self.saps.get("advisory_resource_sap", ""))
+                    (f"Advisory SAP: {saps.get('advisory_sap', '')}", saps.get("advisory_sap", "")),
+                    (f"Technical SAP: {saps.get('technical_sap', '')}", saps.get("technical_sap", "")),
+                    (f"Advisory w/ Resource Awareness SAP: {saps.get('advisory_resource_sap', '')}", saps.get("advisory_resource_sap", ""))
                 ],
                 prompt="Choose SAP",
                 id="sap_select"
             ),
-            Button("Import", id="import_btn", variant="success"),
+            Horizontal(
+                Button("Import", id="import_btn", variant="success", disabled=not bool(csv_files)),  # Disable if no CSVs
+                Button("Back to Menu", id="back_to_menu", variant="primary"),
+                id="csv_import_buttons"
+            ),
             id="csv_import_container"
         )
         yield Footer()
 
     async def on_button_pressed(self, event: Button.Pressed):
-        if event.button.id == "import_btn":
+        if event.button.id == "back_to_menu":
+            self.app.push_screen(MenuScreen())
+        elif event.button.id == "import_btn":
             csv_filename = self.query_one("#csv_select", Select).value
             sap_full_path = self.query_one("#sap_select", Select).value
             if csv_filename and sap_full_path:
                 import_questions_to_db_with_sap(csv_filename, sap_full_path)
-            self.exit()
+            uncategorized = get_uncategorized_questions_from_db()
+            self.app.push_screen(QuestionCategorizerScreen(uncategorized))
 
     async def on_key(self, event: events.Key):
         if event.key == "ctrl+c":
-            await self.action_quit()
+            await self.app.action_quit()
 
     CSS = """
     #csv_import_container {
@@ -386,26 +467,30 @@ class CsvImportScreen(App):
         height: 100%;
         width: 100%;
     }
-    #title {
+    #csv_import_title {
         text-align: center;
         margin-bottom: 1;
     }
-    #csv_label, #sap_label {
+    #csv_info, #csv_label, #sap_label {
         margin-top: 1;
         margin-bottom: 0;
+    }
+    #csv_import_buttons {
+        align: center middle;
+        margin-top: 1;
     }
     Select {
         margin-bottom: 1;
         width: 100%;
     }
     Button {
-        margin: 1 0;
-        min-width: 8;
+        margin: 0 1;
+        min-width: 10;
         padding: 0 1;
     }
     """
 
-# --- Import questions with SAP association ---
+# Add this function to import questions with SAP association:
 def import_questions_to_db_with_sap(csv_file, sap_full_path):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -433,15 +518,33 @@ def import_questions_to_db_with_sap(csv_file, sap_full_path):
     conn.commit()
     conn.close()
 
-# --- Main ---
+# --- Main App ---
+class MainApp(App):
+    def show_csv_import_screen(self):
+        csv_files = [f for f in Path('.').glob('*.csv')]
+        if csv_files:
+            self.push_screen(CsvImportScreen())
+        else:
+            # If no CSVs, go to menu or categorizer
+            if not config_exists():
+                config_values = get_config_values()
+                self.push_screen(ConfigScreen(initial_values=config_values))
+            else:
+                uncategorized = get_uncategorized_questions_from_db()
+                self.push_screen(QuestionCategorizerScreen(uncategorized))
+
+    def on_mount(self):
+        csv_files = [f for f in Path('.').glob('*.csv')]
+        if csv_files:
+            self.show_csv_import_screen()
+        elif not config_exists():
+            config_values = get_config_values()
+            self.push_screen(ConfigScreen(initial_values=config_values))
+        else:
+            uncategorized = get_uncategorized_questions_from_db()
+            self.push_screen(QuestionCategorizerScreen(uncategorized))
+
 if __name__ == "__main__":
     init_db()
     init_config_db()
-    if not config_exists():
-        ConfigScreen().run()
-    # After config, check for CSV files and prompt for import
-    csv_files = [f for f in Path('.').glob('*.csv')]
-    if csv_files:
-        CsvImportScreen().run()
-    uncategorized = get_uncategorized_questions_from_db()
-    QuestionCategorizerApp(uncategorized).run()
+    MainApp().run()
