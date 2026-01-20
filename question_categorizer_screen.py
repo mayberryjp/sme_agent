@@ -17,6 +17,7 @@ class QuestionCategorizerScreen(Screen):
         yield Header()
         yield Container(
             Static("Question Categorizer", classes="title", id="title"),
+            Static("", id="progress", classes="progress"),
             Static("", id="sap"),
             Static("", id="question"),
             Horizontal(
@@ -36,9 +37,25 @@ class QuestionCategorizerScreen(Screen):
         self.update_question()
 
     def update_question(self):
+        import sqlite3
         question_obj = self.questions[self.question_index] if self.question_index < len(self.questions) else None
         sap_widget = self.query_one("#sap", Static)
         question_widget = self.query_one("#question", Static)
+        progress_widget = self.query_one("#progress", Static)
+        # Count categorized and total questions in the database
+        try:
+            conn = sqlite3.connect("questions.db")
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM questions WHERE category IS NOT NULL AND category != ''")
+            categorized = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM questions")
+            total = c.fetchone()[0]
+            conn.close()
+        except Exception:
+            categorized = sum(1 for q in self.questions if q.get("category"))
+            total = len(self.questions)
+        percent = (categorized / total * 100) if total else 0
+        progress_widget.update(f"[bold green]Categorized:[/bold green] {categorized} / {total}  ([bold]{percent:.1f}%[/bold])")
         if question_obj:
             sap_text = question_obj.get("sap", "")
             sap_widget.update(f"[bold light_steel_blue]SAP: {sap_text}[/bold light_steel_blue]")
@@ -71,6 +88,8 @@ class QuestionCategorizerScreen(Screen):
         timestamp = datetime.datetime.now().isoformat()
         row = [guid, question, category, "", "", "", "", "", timestamp]
         save_to_db(row)
+        # Mark this question as categorized in memory for progress bar
+        question_obj["category"] = category
         self.question_index += 1
         self.update_question()
 
@@ -87,6 +106,11 @@ class QuestionCategorizerScreen(Screen):
     #title {
         text-align: center;
         margin-bottom: 2;
+    }
+    #progress {
+        text-align: center;
+        margin-bottom: 1;
+        color: green;
     }
     #question {
         text-align: center;
